@@ -75,15 +75,15 @@ private:
     {
         const size_t headDim = embeddingDim / numHeads;
         Eigen::MatrixXf result(inputEmb.rows(), embeddingDim);
-
+    
         for (int h = 0; h < numHeads; ++h)
         {
             Eigen::MatrixXf Q = inputEmb * queryWeight.block(0, h * headDim, embeddingDim, headDim);
             Eigen::MatrixXf K = inputEmb * keyWeight.block(0, h * headDim, embeddingDim, headDim);
             Eigen::MatrixXf V = inputEmb * valueWeight.block(0, h * headDim, embeddingDim, headDim);
-
+    
             Eigen::MatrixXf headOutput = calculateAttention(Q, K, V);
-
+    
             result.block(0, h * headDim, inputEmb.rows(), headDim) = headOutput;
         }
         return result;
@@ -163,8 +163,8 @@ private:
     }
 
 public:
-    TransformerModel(size_t embeddingDim = 512, size_t contextLen = 32, 
-                     int numLayers = 6, int numHeads = 8)              
+    TransformerModel(size_t embeddingDim = 768, size_t contextLen = 32, // Increase embedding dimension
+                     int numLayers = 12, int numHeads = 12) // Increase number of layers and heads
         : embeddingDim(embeddingDim),
           contextLen(contextLen),
           numLayers(numLayers),
@@ -236,20 +236,20 @@ public:
     {
         if (tokens.empty())
             return Eigen::MatrixXf(0, 0);
-
+    
         Eigen::MatrixXf x = getInputEmbeddings(tokens);
-
+    
         for (int layer = 0; layer < numLayers; ++layer)
         {
             Eigen::MatrixXf attn = multiHeadAttention(x);
             x = x + attn;
             x = layerNorm(x);
-
+    
             Eigen::MatrixXf ff = feedForward(x);
             x = x + ff;
             x = layerNorm(x);
         }
-
+    
         return x * outputWeight;
     }
 
@@ -358,7 +358,7 @@ private:
 public:
     BibleTextAnalyzer() : rng(std::chrono::steady_clock::now().time_since_epoch().count())
     {
-        model = std::make_shared<TransformerModel>(512, 64, 6, 12); // Increase embedding dim, context length, layers, and heads
+        model = std::make_shared<TransformerModel>(768, 64, 12, 12); // Increase embedding dim, context length, layers, and heads
     }
 
     bool loadBibleFromFile(const std::string &filename)
