@@ -1,3 +1,4 @@
+#include <eigen3/Eigen/Dense>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -22,162 +23,21 @@ struct Verse
     size_t id; // Just a simple identifier
 };
 
-// Simple matrix class for transformer operations
-class Matrix
-{
-private:
-    std::vector<float> data;
-    size_t rows, cols;
-
-public:
-    Matrix(size_t rows, size_t cols)
-        : rows(rows), cols(cols), data(rows * cols, 0.0f) {}
-
-    Matrix(size_t rows, size_t cols, std::function<float()> initializer)
-        : rows(rows), cols(cols), data(rows * cols)
-    {
-        for (size_t i = 0; i < data.size(); ++i)
-        {
-            data[i] = initializer();
-        }
-    }
-
-    // Element access
-    float &at(size_t row, size_t col) { return data[row * cols + col]; }
-    float at(size_t row, size_t col) const { return data[row * cols + col]; }
-
-    // Dimensions
-    size_t getRows() const { return rows; }
-    size_t getCols() const { return cols; }
-
-    // Matrix multiplication
-    Matrix matmul(const Matrix &other) const
-    {
-        if (cols != other.rows)
-        {
-            throw std::runtime_error("Matmul dimension mismatch");
-        }
-
-        Matrix result(rows, other.cols);
-        for (size_t i = 0; i < rows; ++i)
-        {
-            for (size_t j = 0; j < other.cols; ++j)
-            {
-                float sum = 0.0f;
-                for (size_t k = 0; k < cols; ++k)
-                {
-                    sum += at(i, k) * other.at(k, j);
-                }
-                result.at(i, j) = sum;
-            }
-        }
-        return result;
-    }
-
-    // Matrix addition
-    Matrix add(const Matrix &other) const
-    {
-        if (rows != other.rows || cols != other.cols)
-        {
-            throw std::runtime_error("Matrix addition dimension mismatch");
-        }
-
-        Matrix result(rows, cols);
-        for (size_t i = 0; i < rows; ++i)
-        {
-            for (size_t j = 0; j < cols; ++j)
-            {
-                result.at(i, j) = at(i, j) + other.at(i, j);
-            }
-        }
-        return result;
-    }
-
-    // Element-wise operation
-    Matrix apply(std::function<float(float)> func) const
-    {
-        Matrix result(rows, cols);
-        for (size_t i = 0; i < rows; ++i)
-        {
-            for (size_t j = 0; j < cols; ++j)
-            {
-                result.at(i, j) = func(at(i, j));
-            }
-        }
-        return result;
-    }
-
-    // Column slicing
-    Matrix slice(size_t start_col, size_t end_col) const
-    {
-        if (end_col > cols || start_col >= end_col)
-        {
-            throw std::runtime_error("Invalid slice dimensions");
-        }
-
-        Matrix result(rows, end_col - start_col);
-        for (size_t i = 0; i < rows; ++i)
-        {
-            for (size_t j = start_col; j < end_col; ++j)
-            {
-                result.at(i, j - start_col) = at(i, j);
-            }
-        }
-        return result;
-    }
-
-    // Softmax activation
-    Matrix softmax() const
-    {
-        Matrix result(rows, cols);
-        for (size_t i = 0; i < rows; ++i)
-        {
-            float max_val = *std::max_element(&data[i * cols], &data[i * cols] + cols);
-            float sum = 0.0f;
-
-            for (size_t j = 0; j < cols; ++j)
-            {
-                result.at(i, j) = std::exp(at(i, j) - max_val);
-                sum += result.at(i, j);
-            }
-
-            for (size_t j = 0; j < cols; ++j)
-            {
-                result.at(i, j) /= sum;
-            }
-        }
-        return result;
-    }
-
-    // Argmax for each row
-    std::vector<size_t> argmax() const
-    {
-        std::vector<size_t> indices(rows);
-        for (size_t i = 0; i < rows; ++i)
-        {
-            indices[i] = static_cast<size_t>(std::max_element(
-                                                 &data[i * cols], &data[i * cols] + cols) -
-                                             &data[i * cols]);
-        }
-        return indices;
-    }
-};
-
 class TransformerModel
 {
 private:
     // Vocabulary and embeddings
     std::unordered_map<std::string, size_t> word2idx;
     std::vector<std::string> idx2word;
-    Matrix embeddings;
+    Eigen::MatrixXf embeddings;
 
     // Model parameters
-    Matrix queryWeight;
-    Matrix keyWeight;
-    Matrix valueWeight;
-    Matrix outputWeight;
-    Matrix ffn1Weight;
-    Matrix ffn2Weight;
+    Eigen::MatrixXf queryWeight;
+    Eigen::MatrixXf keyWeight;
+    Eigen::MatrixXf valueWeight;
+    Eigen::MatrixXf outputWeight;
+    Eigen::MatrixXf ffn1Weight;
+    Eigen::MatrixXf ffn2Weight;
 
     // Hyperparameters
     size_t embeddingDim;
@@ -190,82 +50,41 @@ private:
     std::mt19937 rng;
 
     // ================== Model Components ==================
-    Matrix calculateAttention(const Matrix &Q, const Matrix &K, const Matrix &V) const
+    Eigen::MatrixXf calculateAttention(const Eigen::MatrixXf &Q, const Eigen::MatrixXf &K, const Eigen::MatrixXf &V) const
     {
-        Matrix scores(Q.getRows(), K.getRows());
-        for (size_t i = 0; i < Q.getRows(); ++i)
-        {
-            for (size_t j = 0; j < K.getRows(); ++j)
-            {
-                float dot = 0.0f;
-                for (size_t k = 0; k < Q.getCols(); ++k)
-                {
-                    dot += Q.at(i, k) * K.at(j, k);
-                }
-                scores.at(i, j) = dot / std::sqrt(static_cast<float>(Q.getCols()));
-            }
-        }
-        Matrix attention = scores.softmax();
-        return attention.matmul(V);
+        Eigen::MatrixXf scores = Q * K.transpose() / std::sqrt(static_cast<float>(Q.cols()));
+        Eigen::MatrixXf attention = scores.array().exp();
+        attention = attention.array().colwise() / attention.rowwise().sum().array();
+        return attention * V;
     }
 
-    Matrix layerNorm(const Matrix &input) const
+    Eigen::MatrixXf layerNorm(const Eigen::MatrixXf &input) const
     {
-        Matrix result(input.getRows(), input.getCols());
-        for (size_t i = 0; i < input.getRows(); ++i)
-        {
-            float mean = 0.0f, var = 0.0f;
-            for (size_t j = 0; j < input.getCols(); ++j)
-            {
-                mean += input.at(i, j);
-            }
-            mean /= input.getCols();
-
-            for (size_t j = 0; j < input.getCols(); ++j)
-            {
-                var += std::pow(input.at(i, j) - mean, 2);
-            }
-            var /= input.getCols();
-
-            const float epsilon = 1e-5f;
-            for (size_t j = 0; j < input.getCols(); ++j)
-            {
-                result.at(i, j) = (input.at(i, j) - mean) / std::sqrt(var + epsilon);
-            }
-        }
-        return result;
+        Eigen::VectorXf mean = input.rowwise().mean();
+        Eigen::VectorXf variance = (input.colwise() - mean).array().square().rowwise().mean();
+        return (input.colwise() - mean).array().colwise() / (variance.array() + 1e-5).sqrt().array();
     }
 
-    Matrix feedForward(const Matrix &input) const
+    Eigen::MatrixXf feedForward(const Eigen::MatrixXf &input) const
     {
-        Matrix hidden = input.matmul(ffn1Weight);
-        hidden = hidden.apply([](float x)
-                              { return std::max(0.0f, x); }); // ReLU
-        return hidden.matmul(ffn2Weight);
+        Eigen::MatrixXf hidden = (input * ffn1Weight).array().max(0.0f); // ReLU
+        return hidden * ffn2Weight;
     }
 
-    Matrix multiHeadAttention(const Matrix &inputEmb) const
+    Eigen::MatrixXf multiHeadAttention(const Eigen::MatrixXf &inputEmb) const
     {
         const size_t headDim = embeddingDim / numHeads;
-        Matrix result(inputEmb.getRows(), embeddingDim);
+        Eigen::MatrixXf result(inputEmb.rows(), embeddingDim);
 
         for (int h = 0; h < numHeads; ++h)
         {
-            // Slice weights for this head
-            Matrix Q = inputEmb.matmul(queryWeight.slice(h * headDim, (h + 1) * headDim));
-            Matrix K = inputEmb.matmul(keyWeight.slice(h * headDim, (h + 1) * headDim));
-            Matrix V = inputEmb.matmul(valueWeight.slice(h * headDim, (h + 1) * headDim));
+            Eigen::MatrixXf Q = inputEmb * queryWeight.block(0, h * headDim, embeddingDim, headDim);
+            Eigen::MatrixXf K = inputEmb * keyWeight.block(0, h * headDim, embeddingDim, headDim);
+            Eigen::MatrixXf V = inputEmb * valueWeight.block(0, h * headDim, embeddingDim, headDim);
 
-            Matrix headOutput = calculateAttention(Q, K, V);
+            Eigen::MatrixXf headOutput = calculateAttention(Q, K, V);
 
-            // Concatenate head outputs
-            for (size_t i = 0; i < inputEmb.getRows(); ++i)
-            {
-                for (size_t j = 0; j < headDim; ++j)
-                {
-                    result.at(i, h * headDim + j) = headOutput.at(i, j);
-                }
-            }
+            result.block(0, h * headDim, inputEmb.rows(), headDim) = headOutput;
         }
         return result;
     }
@@ -279,17 +98,14 @@ private:
 
         while (iss >> word)
         {
-            // Preprocess
             word.erase(std::remove_if(word.begin(), word.end(),
-                                      [](char c)
-                                      { return std::ispunct(c); }),
+                                      [](char c) { return std::ispunct(c); }),
                        word.end());
             std::transform(word.begin(), word.end(), word.begin(), ::tolower);
 
             if (word.empty())
                 continue;
 
-            // Handle OOV with subword tokenization
             if (word2idx.count(word))
             {
                 tokens.push_back(word2idx[word]);
@@ -316,22 +132,17 @@ private:
         return tokens;
     }
 
-    Matrix getInputEmbeddings(const std::vector<size_t> &tokens) const
+    Eigen::MatrixXf getInputEmbeddings(const std::vector<size_t> &tokens) const
     {
-        Matrix inputEmb(tokens.size(), embeddingDim);
+        Eigen::MatrixXf inputEmb(tokens.size(), embeddingDim);
 
-        // Word embeddings
         for (size_t i = 0; i < tokens.size(); ++i)
         {
             if (tokens[i] >= vocabularySize)
                 continue;
-            for (size_t j = 0; j < embeddingDim; ++j)
-            {
-                inputEmb.at(i, j) = embeddings.at(tokens[i], j);
-            }
+            inputEmb.row(i) = embeddings.row(tokens[i]);
         }
 
-        // Positional encoding
         for (size_t i = 0; i < tokens.size(); ++i)
         {
             for (size_t j = 0; j < embeddingDim; ++j)
@@ -339,11 +150,11 @@ private:
                 float angle = i / std::pow(10000.0f, (2.0f * (j / 2)) / embeddingDim);
                 if (j % 2 == 0)
                 {
-                    inputEmb.at(i, j) += std::sin(angle);
+                    inputEmb(i, j) += std::sin(angle);
                 }
                 else
                 {
-                    inputEmb.at(i, j) += std::cos(angle);
+                    inputEmb(i, j) += std::cos(angle);
                 }
             }
         }
@@ -351,7 +162,6 @@ private:
     }
 
 public:
-    // ================== Public Interface ==================
     TransformerModel(size_t embeddingDim = 256, size_t contextLen = 32,
                      int numLayers = 4, int numHeads = 8)
         : embeddingDim(embeddingDim),
@@ -375,7 +185,6 @@ public:
 
     void buildModel(const std::vector<Verse> &verses)
     {
-        // Vocabulary construction
         std::map<std::string, int> wordCounts;
         for (const auto &verse : verses)
         {
@@ -392,13 +201,11 @@ public:
             }
         }
 
-        // Sort by frequency
         std::vector<std::pair<std::string, int>> wordFreq(wordCounts.begin(), wordCounts.end());
         std::sort(wordFreq.begin(), wordFreq.end(),
                   [](auto &a, auto &b)
                   { return a.second > b.second; });
 
-        // Build vocabulary
         const size_t maxVocab = 5000;
         vocabularySize = std::min(wordFreq.size(), maxVocab) + 2; // +2 for special tokens
         idx2word.resize(vocabularySize);
@@ -408,41 +215,38 @@ public:
             idx2word[i + 2] = wordFreq[i].first;
         }
 
-        // Initialize parameters
         std::normal_distribution<float> dist(0.0f, 0.02f);
         auto init = [&]
         { return dist(rng); };
 
-        embeddings = Matrix(vocabularySize, embeddingDim, init);
-        queryWeight = Matrix(embeddingDim, embeddingDim, init);
-        keyWeight = Matrix(embeddingDim, embeddingDim, init);
-        valueWeight = Matrix(embeddingDim, embeddingDim, init);
-        outputWeight = Matrix(embeddingDim, vocabularySize, init);
-        ffn1Weight = Matrix(embeddingDim, 4 * embeddingDim, init);
-        ffn2Weight = Matrix(4 * embeddingDim, embeddingDim, init);
+        embeddings = Eigen::MatrixXf::NullaryExpr(vocabularySize, embeddingDim, init);
+        queryWeight = Eigen::MatrixXf::NullaryExpr(embeddingDim, embeddingDim, init);
+        keyWeight = Eigen::MatrixXf::NullaryExpr(embeddingDim, embeddingDim, init);
+        valueWeight = Eigen::MatrixXf::NullaryExpr(embeddingDim, embeddingDim, init);
+        outputWeight = Eigen::MatrixXf::NullaryExpr(embeddingDim, vocabularySize, init);
+        ffn1Weight = Eigen::MatrixXf::NullaryExpr(embeddingDim, 4 * embeddingDim, init);
+        ffn2Weight = Eigen::MatrixXf::NullaryExpr(4 * embeddingDim, embeddingDim, init);
     }
 
-    Matrix forward(const std::vector<size_t> &tokens) const
+    Eigen::MatrixXf forward(const std::vector<size_t> &tokens) const
     {
         if (tokens.empty())
-            return Matrix(0, 0);
+            return Eigen::MatrixXf(0, 0);
 
-        Matrix x = getInputEmbeddings(tokens);
+        Eigen::MatrixXf x = getInputEmbeddings(tokens);
 
         for (int layer = 0; layer < numLayers; ++layer)
         {
-            // Self-attention
-            Matrix attn = multiHeadAttention(x);
-            x = x.add(attn);
+            Eigen::MatrixXf attn = multiHeadAttention(x);
+            x = x + attn;
             x = layerNorm(x);
 
-            // Feed-forward
-            Matrix ff = feedForward(x);
-            x = x.add(ff);
+            Eigen::MatrixXf ff = feedForward(x);
+            x = x + ff;
             x = layerNorm(x);
         }
 
-        return x.matmul(outputWeight);
+        return x * outputWeight;
     }
 
     std::string generateText(const std::string &prompt, size_t maxLen = 50,
@@ -455,28 +259,24 @@ public:
         std::string result = prompt;
         for (size_t i = 0; i < maxLen; ++i)
         {
-            // Truncate to context length
             if (tokens.size() > contextLen)
             {
                 tokens.erase(tokens.begin(), tokens.end() - contextLen);
             }
 
-            Matrix logits = forward(tokens);
+            Eigen::MatrixXf logits = forward(tokens);
             size_t lastPos = tokens.size() - 1;
 
-            // Get probabilities
             std::vector<float> probs(vocabularySize);
             for (size_t j = 0; j < vocabularySize; ++j)
             {
-                probs[j] = std::exp(logits.at(lastPos, j) / temp);
+                probs[j] = std::exp(logits(lastPos, j) / temp);
             }
 
-            // Normalize
             float sum = std::accumulate(probs.begin(), probs.end(), 0.0f);
             for (auto &p : probs)
                 p /= sum;
 
-            // Sample
             size_t nextToken = sample(probs, topK);
             std::string word = idx2word[nextToken];
             result += " " + word;
@@ -510,34 +310,26 @@ public:
         return indices.back();
     }
 
-    // ================== Utility Methods ==================
     std::vector<std::pair<std::string, float>> getRelatedWords(const std::string &word, int topN = 10) const
     {
         std::vector<std::pair<std::string, float>> results;
         if (!word2idx.count(word))
             return results;
-
+    
         const size_t wordIdx = word2idx.at(word);
-        Matrix wordVec = embeddings.slice(wordIdx, wordIdx + 1);
-
+        Eigen::VectorXf wordVec = embeddings.row(wordIdx);
+    
         std::vector<std::pair<float, std::string>> similarities;
         for (size_t i = 0; i < vocabularySize; ++i)
         {
             if (i == wordIdx)
                 continue;
-
-            Matrix currVec = embeddings.slice(i, i + 1);
-            float dot = 0.0f, norm1 = 0.0f, norm2 = 0.0f;
-            for (size_t j = 0; j < embeddingDim; ++j)
-            {
-                dot += wordVec.at(0, j) * currVec.at(0, j);
-                norm1 += wordVec.at(0, j) * wordVec.at(0, j);
-                norm2 += currVec.at(0, j) * currVec.at(0, j);
-            }
-            float cosine = dot / (std::sqrt(norm1) * std::sqrt(norm2));
+    
+            Eigen::VectorXf currVec = embeddings.row(i);
+            float cosine = wordVec.dot(currVec) / (wordVec.norm() * currVec.norm());
             similarities.emplace_back(cosine, idx2word[i]);
         }
-
+    
         std::sort(similarities.rbegin(), similarities.rend());
         for (int i = 0; i < topN && i < similarities.size(); ++i)
         {
