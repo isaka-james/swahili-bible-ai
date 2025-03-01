@@ -99,7 +99,8 @@ private:
         while (iss >> word)
         {
             word.erase(std::remove_if(word.begin(), word.end(),
-                                      [](char c) { return std::ispunct(c); }),
+                                      [](char c)
+                                      { return std::ispunct(c); }),
                        word.end());
             std::transform(word.begin(), word.end(), word.begin(), ::tolower);
 
@@ -162,8 +163,8 @@ private:
     }
 
 public:
-    TransformerModel(size_t embeddingDim = 256, size_t contextLen = 32,
-                     int numLayers = 4, int numHeads = 8)
+    TransformerModel(size_t embeddingDim = 512, size_t contextLen = 32, 
+                     int numLayers = 6, int numHeads = 8)              
         : embeddingDim(embeddingDim),
           contextLen(contextLen),
           numLayers(numLayers),
@@ -192,12 +193,15 @@ public:
             std::string word;
             while (iss >> word)
             {
-                word.erase(std::remove_if(word.begin(), word.end(), 
-                          [](char c) {
-                    return std::ispunct(c); 
-                }), word.end());
+                word.erase(std::remove_if(word.begin(), word.end(),
+                                          [](char c)
+                                          {
+                                              return std::ispunct(c);
+                                          }),
+                           word.end());
                 std::transform(word.begin(), word.end(), word.begin(), ::tolower);
-                if (!word.empty()) wordCounts[word]++;
+                if (!word.empty())
+                    wordCounts[word]++;
             }
         }
 
@@ -285,25 +289,30 @@ public:
         return result;
     }
 
-    size_t sample(const std::vector<float> &probs, int topK) {
+    size_t sample(const std::vector<float> &probs, int topK)
+    {
         std::vector<size_t> indices(probs.size());
         std::iota(indices.begin(), indices.end(), 0);
         std::partial_sort(indices.begin(), indices.begin() + topK, indices.end(),
-                          [&probs](size_t a, size_t b) { return probs[a] > probs[b]; });
-    
+                          [&probs](size_t a, size_t b)
+                          { return probs[a] > probs[b]; });
+
         std::vector<float> topProbs(topK);
         float sum = 0.0f;
-        for (int i = 0; i < topK; ++i) {
+        for (int i = 0; i < topK; ++i)
+        {
             topProbs[i] = probs[indices[i]];
             sum += topProbs[i];
         }
-    
+
         std::uniform_real_distribution<float> dist(0.0f, sum);
-        float threshold = dist(rng);  // Remove const from rng
+        float threshold = dist(rng); // Remove const from rng
         float accum = 0.0f;
-        for (int i = 0; i < topK; ++i) {
+        for (int i = 0; i < topK; ++i)
+        {
             accum += topProbs[i];
-            if (accum >= threshold) {
+            if (accum >= threshold)
+            {
                 return indices[i];
             }
         }
@@ -315,21 +324,21 @@ public:
         std::vector<std::pair<std::string, float>> results;
         if (!word2idx.count(word))
             return results;
-    
+
         const size_t wordIdx = word2idx.at(word);
         Eigen::VectorXf wordVec = embeddings.row(wordIdx);
-    
+
         std::vector<std::pair<float, std::string>> similarities;
         for (size_t i = 0; i < vocabularySize; ++i)
         {
             if (i == wordIdx)
                 continue;
-    
+
             Eigen::VectorXf currVec = embeddings.row(i);
             float cosine = wordVec.dot(currVec) / (wordVec.norm() * currVec.norm());
             similarities.emplace_back(cosine, idx2word[i]);
         }
-    
+
         std::sort(similarities.rbegin(), similarities.rend());
         for (int i = 0; i < topN && i < similarities.size(); ++i)
         {
@@ -349,7 +358,7 @@ private:
 public:
     BibleTextAnalyzer() : rng(std::chrono::steady_clock::now().time_since_epoch().count())
     {
-        model = std::make_shared<TransformerModel>(256, 64, 4, 8); // Embedding dim 256, context 64, 4 layers, 8 heads
+        model = std::make_shared<TransformerModel>(512, 64, 6, 12); // Increase embedding dim, context length, layers, and heads
     }
 
     bool loadBibleFromFile(const std::string &filename)
@@ -424,47 +433,54 @@ public:
         }
     }
 
-    void printStatistics() const {
-        if (verses.empty()) {
+    void printStatistics() const
+    {
+        if (verses.empty())
+        {
             std::cout << "No data loaded\n";
             return;
         }
-    
+
         // Word statistics
         size_t totalWords = 0;
         std::unordered_map<std::string, int> wordCounts;
-    
-        for (const auto &verse : verses) {
+
+        for (const auto &verse : verses)
+        {
             std::istringstream iss(verse.text);
             std::string word;
-            while (iss >> word) {
+            while (iss >> word)
+            {
                 // Match model's preprocessing
                 word.erase(std::remove_if(word.begin(), word.end(),
-                                          [](char c) { return std::ispunct(c); }),
+                                          [](char c)
+                                          { return std::ispunct(c); }),
                            word.end());
                 std::transform(word.begin(), word.end(), word.begin(), ::tolower);
-    
-                if (!word.empty()) {
+
+                if (!word.empty())
+                {
                     wordCounts[word]++;
                     totalWords++;
                 }
             }
         }
-    
+
         // Verse length statistics
         std::vector<size_t> lengths;
-        for (const auto &verse : verses) {
+        for (const auto &verse : verses)
+        {
             std::istringstream iss(verse.text);
             lengths.push_back(std::distance(std::istream_iterator<std::string>(iss),
                                             std::istream_iterator<std::string>()));
         }
-    
+
         // Calculate percentiles
         std::sort(lengths.begin(), lengths.end());
         size_t p25 = lengths.size() > 0 ? lengths[lengths.size() / 4] : 0;
         size_t p50 = lengths.size() > 0 ? lengths[lengths.size() / 2] : 0;
         size_t p75 = lengths.size() > 0 ? lengths[3 * lengths.size() / 4] : 0;
-    
+
         // Print report
         std::cout << "\n=== Bible Statistics ===\n"
                   << "Total verses: " << verses.size() << "\n"
@@ -475,34 +491,40 @@ public:
                   << "Verse length percentiles - 25th: " << p25
                   << ", 50th: " << p50
                   << ", 75th: " << p75 << "\n";
-    
+
         // Show sample verses
         std::uniform_int_distribution<size_t> dist(0, verses.size() - 1);
-        for (int i = 0; i < 3; i++) {
-            const auto &v = verses[dist(rng)];  // Remove const from rng
+        for (int i = 0; i < 3; i++)
+        {
+            const auto &v = verses[dist(rng)]; // Remove const from rng
             std::cout << "[" << v.id << "] " << v.text << "\n";
         }
     }
 };
 
-int main() {
+int main()
+{
     BibleTextAnalyzer analyzer;
-    
+
     std::cout << "Bible Text Analyzer using Transformer Model\n"
               << "-------------------------------------------\n";
 
     // Load Bible text
-    if (!analyzer.loadBibleFromFile("bible.txt")) {
+    if (!analyzer.loadBibleFromFile("bible.txt"))
+    {
         std::cerr << "\nError: Failed to load Bible text. "
                   << "Ensure 'bible.txt' exists in the current directory.\n";
         return 1;
     }
 
     // Build and validate model
-    try {
+    try
+    {
         std::cout << "\nBuilding language model...\n";
         analyzer.buildModel();
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception &e)
+    {
         std::cerr << "\nModel build failed: " << e.what() << "\n";
         return 2;
     }
@@ -526,36 +548,44 @@ int main() {
     // Verse search
     std::string searchTerm = "Hapo mwanzo";
     auto results = analyzer.findVerses(searchTerm);
-    
+
     std::cout << "\n=== Search Results for '" << searchTerm << "' ===\n"
               << "Found " << results.size() << " matching verses:\n";
-              
-    for (size_t i = 0; i < std::min(results.size(), size_t(5)); ++i) {
-        std::cout << "Verse #" << results[i].id << ": " 
+
+    for (size_t i = 0; i < std::min(results.size(), size_t(5)); ++i)
+    {
+        std::cout << "Verse #" << results[i].id << ": "
                   << results[i].text << "\n";
     }
-    if (results.size() > 5) {
-        std::cout << "... and " << (results.size() - 5) 
+    if (results.size() > 5)
+    {
+        std::cout << "... and " << (results.size() - 5)
                   << " more results.\n";
     }
 
     // Interactive mode
     std::cout << "\n=== Interactive Mode ===\n"
               << "Enter prompts for text generation (or 'quit' to exit)\n";
-    
-    while (true) {
+
+    while (true)
+    {
         std::cout << "\n> ";
         std::string input;
         std::getline(std::cin, input);
-        
-        if (input.empty()) continue;
-        if (input == "q" || input == "quit" || input == "exit") break;
 
-        try {
-            std::cout << "\nGenerated text:\n" 
-                      << analyzer.generateText(input, 50, 0.7f) 
+        if (input.empty())
+            continue;
+        if (input == "q" || input == "quit" || input == "exit")
+            break;
+
+        try
+        {
+            std::cout << "\nGenerated text:\n"
+                      << analyzer.generateText(input, 50, 0.7f)
                       << "\n";
-        } catch (const std::exception& e) {
+        }
+        catch (const std::exception &e)
+        {
             std::cerr << "Generation error: " << e.what() << "\n";
         }
     }
