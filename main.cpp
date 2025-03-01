@@ -16,6 +16,14 @@
 #include <iomanip>
 #include <iterator>
 
+// Global variables for hyperparameters
+float LEARNING_RATE = 0.001;
+size_t EMBEDDING_DIM = 768;
+size_t CONTEXT_LEN = 32;
+int NUM_LAYERS = 12;
+int NUM_HEADS = 12;
+size_t MAX_VOCAB = 5000;
+
 // Structure to hold verse information (simplified)
 struct Verse
 {
@@ -25,31 +33,93 @@ struct Verse
 
 class TransformerModel
 {
-private:
-    // Vocabulary and embeddings
+public:
     std::unordered_map<std::string, size_t> word2idx;
     std::vector<std::string> idx2word;
     Eigen::MatrixXf embeddings;
-
-    // Model parameters
     Eigen::MatrixXf queryWeight;
     Eigen::MatrixXf keyWeight;
     Eigen::MatrixXf valueWeight;
     Eigen::MatrixXf outputWeight;
     Eigen::MatrixXf ffn1Weight;
     Eigen::MatrixXf ffn2Weight;
-
-    // Hyperparameters
     size_t embeddingDim;
     size_t contextLen;
     size_t vocabularySize;
     int numLayers;
     int numHeads;
-
-    // Random number generator
     std::mt19937 rng;
 
-    // ================== Model Components ==================
+    TransformerModel()
+        : word2idx(),
+          idx2word(),
+          embeddings(0, 0),
+          queryWeight(EMBEDDING_DIM, EMBEDDING_DIM),
+          keyWeight(EMBEDDING_DIM, EMBEDDING_DIM),
+          valueWeight(EMBEDDING_DIM, EMBEDDING_DIM),
+          outputWeight(EMBEDDING_DIM, 1), // Temporary size, updated in buildModel
+          ffn1Weight(EMBEDDING_DIM, 4 * EMBEDDING_DIM),
+          ffn2Weight(4 * EMBEDDING_DIM, EMBEDDING_DIM),
+          embeddingDim(EMBEDDING_DIM),
+          contextLen(CONTEXT_LEN),
+          vocabularySize(0),
+          numLayers(NUM_LAYERS),
+          numHeads(NUM_HEADS),
+          rng(std::chrono::steady_clock::now().time_since_epoch().count())
+    {
+        word2idx["<pad>"] = 0;
+        word2idx["<unk>"] = 1;
+        idx2word = {"<pad>", "<unk>"};
+        vocabularySize = 2;
+    }
+    
+    void buildModel(const std::vector<Verse> &verses)
+    {
+        std::map<std::string, int> wordCounts;
+        for (const auto &verse : verses)
+        {
+            std::istringstream iss(verse.text);
+            std::string word;
+            while (iss >> word)
+            {
+                word.erase(std::remove_if(word.begin(), word.end(),
+                                          [](char c)
+                                          {
+                                              return std::ispunct(c);
+                                          }),
+                           word.end());
+                std::transform(word.begin(), word.end(), word.begin(), ::tolower);
+                if (!word.empty())
+                    wordCounts[word]++;
+            }
+        }
+
+        std::vector<std::pair<std::string, int>> wordFreq(wordCounts.begin(), wordCounts.end());
+        std::sort(wordFreq.begin(), wordFreq.end(),
+                  [](auto &a, auto &b)
+                  { return a.second > b.second; });
+
+        vocabularySize = std::min(wordFreq.size(), MAX_VOCAB) + 2; // +2 for special tokens
+        idx2word.resize(vocabularySize);
+        for (size_t i = 0; i < vocabularySize - 2; ++i)
+        {
+            word2idx[wordFreq[i].first] = i + 2;
+            idx2word[i + 2] = wordFreq[i].first;
+        }
+
+        std::normal_distribution<float> dist(0.0f, 0.02f);
+        auto init = [&]
+        { return dist(rng); };
+
+        embeddings = Eigen::MatrixXf::NullaryExpr(vocabularySize, embeddingDim, init);
+        queryWeight = Eigen::MatrixXf::NullaryExpr(embeddingDim, embeddingDim, init);
+        keyWeight = Eigen::MatrixXf::NullaryExpr(embeddingDim, embeddingDim, init);
+        valueWeight = Eigen::MatrixXf::NullaryExpr(embeddingDim, embeddingDim, init);
+        outputWeight = Eigen::MatrixXf::NullaryExpr(embeddingDim, vocabularySize, init);
+        ffn1Weight = Eigen::MatrixXf::NullaryExpr(embeddingDim, 4 * embeddingDim, init);
+        ffn2Weight = Eigen::MatrixXf::NullaryExpr(4 * embeddingDim, embeddingDim, init);
+    }
+
     Eigen::MatrixXf calculateAttention(const Eigen::MatrixXf &Q, const Eigen::MatrixXf &K, const Eigen::MatrixXf &V) const
     {
         Eigen::MatrixXf scores = Q * K.transpose() / std::sqrt(static_cast<float>(Q.cols()));
@@ -89,7 +159,56 @@ private:
         return result;
     }
 
-    // ================== Core Methods ==================
+    Eigen::MatrixXf getInputEmbeddings(const std::vector<size_t> &tokens) const
+    {
+        Eigen::MatrixXf inputEmb(tokens.size(), embeddingDim);
+
+        for (size_t i = 0; i < tokens.size(); ++i)
+        {
+            if (tokens[i] >= vocabularySize)
+                continue;
+            inputEmb.row(i) = embeddings.row(tokens[i]);
+        }
+
+        for (size_t i = 0; i < tokens.size(); ++i)
+        {
+            for (size_t j = 0; j < embeddingDim; ++j)
+            {
+                float angle = i / std::pow(10000.0f, (2.0f * (j / 2)) / embeddingDim);
+                if (j % 2 == 0)
+                {
+                    inputEmb(i, j) += std::sin(angle);
+                }
+                else
+                {
+                    inputEmb(i, j) += std::cos(angle);
+                }
+            }
+        }
+        return inputEmb;
+    }
+
+    Eigen::MatrixXf forward(const std::vector<size_t> &tokens) const
+    {
+        if (tokens.empty())
+            return Eigen::MatrixXf(0, 0);
+    
+        Eigen::MatrixXf x = getInputEmbeddings(tokens);
+    
+        for (int layer = 0; layer < numLayers; ++layer)
+        {
+            Eigen::MatrixXf attn = multiHeadAttention(x);
+            x = x + attn;
+            x = layerNorm(x);
+    
+            Eigen::MatrixXf ff = feedForward(x);
+            x = x + ff;
+            x = layerNorm(x);
+        }
+    
+        return x * outputWeight;
+    }
+
     std::vector<size_t> tokenize(const std::string &text)
     {
         std::vector<size_t> tokens;
@@ -133,162 +252,6 @@ private:
         return tokens;
     }
 
-    Eigen::MatrixXf getInputEmbeddings(const std::vector<size_t> &tokens) const
-    {
-        Eigen::MatrixXf inputEmb(tokens.size(), embeddingDim);
-
-        for (size_t i = 0; i < tokens.size(); ++i)
-        {
-            if (tokens[i] >= vocabularySize)
-                continue;
-            inputEmb.row(i) = embeddings.row(tokens[i]);
-        }
-
-        for (size_t i = 0; i < tokens.size(); ++i)
-        {
-            for (size_t j = 0; j < embeddingDim; ++j)
-            {
-                float angle = i / std::pow(10000.0f, (2.0f * (j / 2)) / embeddingDim);
-                if (j % 2 == 0)
-                {
-                    inputEmb(i, j) += std::sin(angle);
-                }
-                else
-                {
-                    inputEmb(i, j) += std::cos(angle);
-                }
-            }
-        }
-        return inputEmb;
-    }
-
-public:
-    TransformerModel(size_t embeddingDim = 768, size_t contextLen = 32, // Increase embedding dimension
-                     int numLayers = 12, int numHeads = 12) // Increase number of layers and heads
-        : embeddingDim(embeddingDim),
-          contextLen(contextLen),
-          numLayers(numLayers),
-          numHeads(numHeads),
-          queryWeight(embeddingDim, embeddingDim),
-          keyWeight(embeddingDim, embeddingDim),
-          valueWeight(embeddingDim, embeddingDim),
-          outputWeight(embeddingDim, 1), // Temporary size, updated in buildModel
-          ffn1Weight(embeddingDim, 4 * embeddingDim),
-          ffn2Weight(4 * embeddingDim, embeddingDim),
-          embeddings(0, 0),
-          rng(std::chrono::steady_clock::now().time_since_epoch().count())
-    {
-        word2idx["<pad>"] = 0;
-        word2idx["<unk>"] = 1;
-        idx2word = {"<pad>", "<unk>"};
-        vocabularySize = 2;
-    }
-
-    void buildModel(const std::vector<Verse> &verses)
-    {
-        std::map<std::string, int> wordCounts;
-        for (const auto &verse : verses)
-        {
-            std::istringstream iss(verse.text);
-            std::string word;
-            while (iss >> word)
-            {
-                word.erase(std::remove_if(word.begin(), word.end(),
-                                          [](char c)
-                                          {
-                                              return std::ispunct(c);
-                                          }),
-                           word.end());
-                std::transform(word.begin(), word.end(), word.begin(), ::tolower);
-                if (!word.empty())
-                    wordCounts[word]++;
-            }
-        }
-
-        std::vector<std::pair<std::string, int>> wordFreq(wordCounts.begin(), wordCounts.end());
-        std::sort(wordFreq.begin(), wordFreq.end(),
-                  [](auto &a, auto &b)
-                  { return a.second > b.second; });
-
-        const size_t maxVocab = 5000;
-        vocabularySize = std::min(wordFreq.size(), maxVocab) + 2; // +2 for special tokens
-        idx2word.resize(vocabularySize);
-        for (size_t i = 0; i < vocabularySize - 2; ++i)
-        {
-            word2idx[wordFreq[i].first] = i + 2;
-            idx2word[i + 2] = wordFreq[i].first;
-        }
-
-        std::normal_distribution<float> dist(0.0f, 0.02f);
-        auto init = [&]
-        { return dist(rng); };
-
-        embeddings = Eigen::MatrixXf::NullaryExpr(vocabularySize, embeddingDim, init);
-        queryWeight = Eigen::MatrixXf::NullaryExpr(embeddingDim, embeddingDim, init);
-        keyWeight = Eigen::MatrixXf::NullaryExpr(embeddingDim, embeddingDim, init);
-        valueWeight = Eigen::MatrixXf::NullaryExpr(embeddingDim, embeddingDim, init);
-        outputWeight = Eigen::MatrixXf::NullaryExpr(embeddingDim, vocabularySize, init);
-        ffn1Weight = Eigen::MatrixXf::NullaryExpr(embeddingDim, 4 * embeddingDim, init);
-        ffn2Weight = Eigen::MatrixXf::NullaryExpr(4 * embeddingDim, embeddingDim, init);
-    }
-
-    Eigen::MatrixXf forward(const std::vector<size_t> &tokens) const
-    {
-        if (tokens.empty())
-            return Eigen::MatrixXf(0, 0);
-    
-        Eigen::MatrixXf x = getInputEmbeddings(tokens);
-    
-        for (int layer = 0; layer < numLayers; ++layer)
-        {
-            Eigen::MatrixXf attn = multiHeadAttention(x);
-            x = x + attn;
-            x = layerNorm(x);
-    
-            Eigen::MatrixXf ff = feedForward(x);
-            x = x + ff;
-            x = layerNorm(x);
-        }
-    
-        return x * outputWeight;
-    }
-
-    std::string generateText(const std::string &prompt, size_t maxLen = 50,
-                             float temp = 1.0f, int topK = 40)
-    {
-        std::vector<size_t> tokens = tokenize(prompt);
-        if (tokens.empty())
-            tokens.push_back(word2idx["<unk>"]);
-
-        std::string result = prompt;
-        for (size_t i = 0; i < maxLen; ++i)
-        {
-            if (tokens.size() > contextLen)
-            {
-                tokens.erase(tokens.begin(), tokens.end() - contextLen);
-            }
-
-            Eigen::MatrixXf logits = forward(tokens);
-            size_t lastPos = tokens.size() - 1;
-
-            std::vector<float> probs(vocabularySize);
-            for (size_t j = 0; j < vocabularySize; ++j)
-            {
-                probs[j] = std::exp(logits(lastPos, j) / temp);
-            }
-
-            float sum = std::accumulate(probs.begin(), probs.end(), 0.0f);
-            for (auto &p : probs)
-                p /= sum;
-
-            size_t nextToken = sample(probs, topK);
-            std::string word = idx2word[nextToken];
-            result += " " + word;
-            tokens.push_back(nextToken);
-        }
-        return result;
-    }
-
     size_t sample(const std::vector<float> &probs, int topK)
     {
         std::vector<size_t> indices(probs.size());
@@ -306,7 +269,7 @@ public:
         }
 
         std::uniform_real_distribution<float> dist(0.0f, sum);
-        float threshold = dist(rng); // Remove const from rng
+        float threshold = dist(rng);
         float accum = 0.0f;
         for (int i = 0; i < topK; ++i)
         {
@@ -358,7 +321,7 @@ private:
 public:
     BibleTextAnalyzer() : rng(std::chrono::steady_clock::now().time_since_epoch().count())
     {
-        model = std::make_shared<TransformerModel>(768, 64, 12, 12); // Increase embedding dim, context length, layers, and heads
+        model = std::make_shared<TransformerModel>();
     }
 
     bool loadBibleFromFile(const std::string &filename)
@@ -395,13 +358,47 @@ public:
         model->buildModel(verses);
     }
 
-    std::string generateText(const std::string &prompt, size_t maxLength = 50, float temperature = 0.8f)
+    void generateText(const std::string &prompt, size_t maxLen = 50, float temp = 1.0f, int topK = 40)
     {
-        if (verses.empty())
+        std::vector<size_t> tokens = model->tokenize(prompt);
+        if (tokens.empty())
+            tokens.push_back(model->word2idx["<unk>"]);
+    
+        std::string result = prompt;
+        std::cout << result; // Print the initial prompt
+    
+        for (size_t i = 0; i < maxLen; ++i)
         {
-            return "Error: No Bible text loaded";
+            if (tokens.size() > model->contextLen)
+            {
+                tokens.erase(tokens.begin(), tokens.end() - model->contextLen);
+            }
+    
+            Eigen::MatrixXf logits = model->forward(tokens);
+            size_t lastPos = tokens.size() - 1;
+    
+            std::vector<float> probs(model->vocabularySize);
+            for (size_t j = 0; j < model->vocabularySize; ++j)
+            {
+                probs[j] = std::exp(logits(lastPos, j) / temp);
+            }
+    
+            float sum = std::accumulate(probs.begin(), probs.end(), 0.0f);
+            for (auto &p : probs)
+                p /= sum;
+    
+            size_t nextToken = model->sample(probs, topK);
+            std::string word = model->idx2word[nextToken];
+            result += " " + word;
+            tokens.push_back(nextToken);
+    
+            std::cout << " " << word; // Print each generated word incrementally
+            std::cout.flush(); // Ensure the word is printed immediately
+    
+            if (word == "<eos>") // Stop if end-of-sequence token is generated
+                break;
         }
-        return model->generateText(prompt, maxLength, temperature);
+        std::cout << std::endl; // Print a newline at the end
     }
 
     std::vector<Verse> findVerses(const std::string &searchTerm) const
@@ -496,7 +493,7 @@ public:
         std::uniform_int_distribution<size_t> dist(0, verses.size() - 1);
         for (int i = 0; i < 3; i++)
         {
-            const auto &v = verses[dist(rng)]; // Remove const from rng
+            const auto &v = verses[dist(rng)];
             std::cout << "[" << v.id << "] " << v.text << "\n";
         }
     }
@@ -535,10 +532,12 @@ int main()
     // Text generation examples
     std::cout << "\n=== Generated Bible-like Text ===\n";
     std::cout << "Prompt: 'Yesu ni'\n";
-    std::cout << analyzer.generateText("Yesu ni", 50, 0.7f) << "\n\n";
+    analyzer.generateText("Yesu ni", 50, 0.7f);
+    std::cout << "\n\n";
 
     std::cout << "Prompt: 'Mungu ni '\n";
-    std::cout << analyzer.generateText("Mungu ni", 50, 0.7f) << "\n\n";
+    analyzer.generateText("Mungu ni", 50, 0.7f);
+    std::cout << "\n\n";
 
     // Word relationships
     analyzer.showRelatedWords("Yesu");
@@ -580,9 +579,9 @@ int main()
 
         try
         {
-            std::cout << "\nGenerated text:\n"
-                      << analyzer.generateText(input, 50, 0.7f)
-                      << "\n";
+            std::cout << "\nGenerated text:\n";
+            analyzer.generateText(input, 50, 0.7f);
+            std::cout << "\n";
         }
         catch (const std::exception &e)
         {
