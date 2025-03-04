@@ -18,11 +18,11 @@
 
 // Global variables for hyperparameters
 float LEARNING_RATE = 0.001;
-size_t EMBEDDING_DIM = 768;
-size_t CONTEXT_LEN = 32;
-int NUM_LAYERS = 12;
-int NUM_HEADS = 12;
-size_t MAX_VOCAB = 5000;
+size_t EMBEDDING_DIM = 512;
+size_t CONTEXT_LEN = 64;
+int NUM_LAYERS = 6;
+int NUM_HEADS = 8;
+size_t MAX_VOCAB = 10000;
 
 // Structure to hold verse information (simplified)
 struct Verse
@@ -72,7 +72,7 @@ public:
         idx2word = {"<pad>", "<unk>"};
         vocabularySize = 2;
     }
-    
+
     void buildModel(const std::vector<Verse> &verses)
     {
         std::map<std::string, int> wordCounts;
@@ -145,15 +145,15 @@ public:
     {
         const size_t headDim = embeddingDim / numHeads;
         Eigen::MatrixXf result(inputEmb.rows(), embeddingDim);
-    
+
         for (int h = 0; h < numHeads; ++h)
         {
             Eigen::MatrixXf Q = inputEmb * queryWeight.block(0, h * headDim, embeddingDim, headDim);
             Eigen::MatrixXf K = inputEmb * keyWeight.block(0, h * headDim, embeddingDim, headDim);
             Eigen::MatrixXf V = inputEmb * valueWeight.block(0, h * headDim, embeddingDim, headDim);
-    
+
             Eigen::MatrixXf headOutput = calculateAttention(Q, K, V);
-    
+
             result.block(0, h * headDim, inputEmb.rows(), headDim) = headOutput;
         }
         return result;
@@ -192,20 +192,20 @@ public:
     {
         if (tokens.empty())
             return Eigen::MatrixXf(0, 0);
-    
+
         Eigen::MatrixXf x = getInputEmbeddings(tokens);
-    
+
         for (int layer = 0; layer < numLayers; ++layer)
         {
             Eigen::MatrixXf attn = multiHeadAttention(x);
             x = x + attn;
             x = layerNorm(x);
-    
+
             Eigen::MatrixXf ff = feedForward(x);
             x = x + ff;
             x = layerNorm(x);
         }
-    
+
         return x * outputWeight;
     }
 
@@ -363,38 +363,38 @@ public:
         std::vector<size_t> tokens = model->tokenize(prompt);
         if (tokens.empty())
             tokens.push_back(model->word2idx["<unk>"]);
-    
+
         std::string result = prompt;
         std::cout << result; // Print the initial prompt
-    
+
         for (size_t i = 0; i < maxLen; ++i)
         {
             if (tokens.size() > model->contextLen)
             {
                 tokens.erase(tokens.begin(), tokens.end() - model->contextLen);
             }
-    
+
             Eigen::MatrixXf logits = model->forward(tokens);
             size_t lastPos = tokens.size() - 1;
-    
+
             std::vector<float> probs(model->vocabularySize);
             for (size_t j = 0; j < model->vocabularySize; ++j)
             {
                 probs[j] = std::exp(logits(lastPos, j) / temp);
             }
-    
+
             float sum = std::accumulate(probs.begin(), probs.end(), 0.0f);
             for (auto &p : probs)
                 p /= sum;
-    
+
             size_t nextToken = model->sample(probs, topK);
             std::string word = model->idx2word[nextToken];
             result += " " + word;
             tokens.push_back(nextToken);
-    
+
             std::cout << " " << word; // Print each generated word incrementally
-            std::cout.flush(); // Ensure the word is printed immediately
-    
+            std::cout.flush();        // Ensure the word is printed immediately
+
             if (word == "<eos>") // Stop if end-of-sequence token is generated
                 break;
         }
@@ -531,12 +531,12 @@ int main()
 
     // Text generation examples
     std::cout << "\n=== Generated Bible-like Text ===\n";
-    std::cout << "Prompt: 'Yesu ni'\n";
-    analyzer.generateText("Yesu ni", 50, 0.7f);
+    std::cout << "Prompt: 'Tabia nzuri ambazo zinampendeza Yesu Kristo ni'\n";
+    analyzer.generateText("Tabia nzuri ambazo zinampendeza Yesu Kristo ni", 50, 0.7f);
     std::cout << "\n\n";
 
-    std::cout << "Prompt: 'Mungu ni '\n";
-    analyzer.generateText("Mungu ni", 50, 0.7f);
+    std::cout << "Prompt: 'Mambo ambayo hayapaswi kufanywa na mtu, ambayo ni machafu na hayampendezi Mungu ni'\n";
+    analyzer.generateText("Mambo ambayo hayapaswi kufanywa na mtu, ambayo ni machafu na hayampendezi Mungu ni", 50, 0.7f);
     std::cout << "\n\n";
 
     // Word relationships
